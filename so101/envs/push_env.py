@@ -25,7 +25,8 @@ HOME = np.array([-0.001, -1.092, 1.978, -0.635, -0.872, 1.226])
 ACTION_SCALE = 0.15
 REACH_WEIGHT = 0.5
 SUCCESS_BONUS = 10.0
-TIP_BONUS = 0.05
+TIP_BONUS = 0.3
+NONTIP_PENALTY = 0.1
 
 ESCAPE_X = 0.14
 ESCAPE_Y = 0.030
@@ -78,6 +79,15 @@ class SO101PushEnv(gym.Env):
             mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, n) for n in JAW_GEOMS
         }
         self.jaw_gids.discard(-1)
+        # every geom belonging to the arm (for the non-tip contact penalty)
+        self.arm_gids = set()
+        for g in range(self.model.ngeom):
+            root = self.model.body_rootid[self.model.geom_bodyid[g]]
+            if root != self.model.body_rootid[self.cube_bid] and g != self.cube_gid:
+                name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_GEOM, g) or ""
+                if not name.startswith(("tray", "wall", "zone", "floor")):
+                    self.arm_gids.add(g)
+        self.arm_gids -= self.jaw_gids
 
         self.cube_qpos_adr = self.model.jnt_qposadr[
             mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, "cube_free")]
@@ -112,13 +122,22 @@ class SO101PushEnv(gym.Env):
     def grip_xy(self):
         return self.data.xpos[self.grip_bid][:2].copy()
 
-    def _tip_contact(self):
+    def _contact_kind(self):
+        """(tip, nontip): cube touching a jaw pad / touching the arm elsewhere."""
+        tip = nontip = False
         for i in range(self.data.ncon):
             c = self.data.contact[i]
-            if (c.geom1 == self.cube_gid and c.geom2 in self.jaw_gids) or \
-               (c.geom2 == self.cube_gid and c.geom1 in self.jaw_gids):
-                return True
-        return False
+            if c.geom1 == self.cube_gid:
+                other = c.geom2
+            elif c.geom2 == self.cube_gid:
+                other = c.geom1
+            else:
+                continue
+            if other in self.jaw_gids:
+                tip = True
+            elif other in self.arm_gids:
+                nontip = True
+        return tip, nontip
 
     def _obs(self):
         qpos = self.data.qpos[: self.nu].copy()
@@ -195,11 +214,12 @@ class SO101PushEnv(gym.Env):
         success = self._success()
         dist = float(np.linalg.norm(self.cube_xy - self.target_xy))
         d_reach = float(np.linalg.norm(self.grip_xy - self.cube_xy))
-        tip = self._tip_contact()
+        tip, nontip = self._contact_kind()
 
         if self.reward_type == "dense":
             reward = (-dist - REACH_WEIGHT * d_reach
                       + (TIP_BONUS if tip else 0.0)
+                      - (NONTIP_PENALTY if nontip else 0.0)
                       + (SUCCESS_BONUS if success else 0.0))
         else:
             reward = 1.0 if success else 0.0
@@ -227,7 +247,7 @@ class SO101PushEnv(gym.Env):
             self._stuck_ref, self._stuck_count = None, 0
             truncated = True
 
-        info = {"success": success, "dist": dist, "reach": d_reach, "tip": tip,
+        info = {"success": success, "dist": dist, "reach": d_reach, "tip": tip, "nontip": nontip,
                 "target": self.target_name, "intervention": intervened,
                 "intervention_kind": ("escape" if escaped else "stuck" if stuck else ""),
                 "cube_bin": xy_to_bin(self.cube_xy),
