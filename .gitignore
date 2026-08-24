@@ -1,0 +1,10 @@
+lerobot/
+SO-ARM100/
+mujoco_menagerie/
+runs/**/*.zip
+runs/**/ckpt_*
+runs/**/events.out.tfevents.*
+__pycache__/
+*.pyc
+*.mjb
+MUJOCO_LOG.TXT
