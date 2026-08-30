@@ -115,6 +115,7 @@ class LogCallback(BaseCallback):
 
 def main():
     p = argparse.ArgumentParser()
+    p.add_argument("--single-dir", action="store_true")
     p.add_argument("--mode", default=None, choices=["episodic", "reset_free"])
     p.add_argument("--curriculum", default=None,
                    choices=["baseline", "progress", "regret", "vaprl"])
@@ -135,7 +136,7 @@ def main():
     if args.curriculum:
         env = make_env(args.curriculum, seed=args.seed)
     else:
-        env = SO101PushEnv(mode=args.mode, reward_type=args.reward, seed=args.seed)
+        env = SO101PushEnv(mode=args.mode, reward_type=args.reward, seed=args.seed, alternate=not args.single_dir)
 
     model = SAC("MlpPolicy", env,
                 learning_rate=3e-4, buffer_size=300_000, batch_size=256,

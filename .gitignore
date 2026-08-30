@@ -8,3 +8,6 @@ __pycache__/
 *.pyc
 *.mjb
 MUJOCO_LOG.TXT
+echo demos/ 
+echo outputs/ 
+echo *.zip 

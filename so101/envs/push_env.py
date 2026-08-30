@@ -16,8 +16,8 @@ DEFAULT_XML = os.path.join(
 
 TRAY_CENTRE = np.array([0.0, -0.30])
 ZONE_A = np.array([-0.075, -0.30])
-ZONE_B = np.array([0.075, -0.30])
-ZONE_RADIUS = 0.04
+ZONE_B = np.array([0.045, -0.30])
+ZONE_RADIUS = 0.05
 CUBE_Z = 0.03
 
 HOME = np.array([-0.001, -1.092, 1.978, -0.635, -0.872, 1.226])
@@ -25,8 +25,8 @@ HOME = np.array([-0.001, -1.092, 1.978, -0.635, -0.872, 1.226])
 ACTION_SCALE = 0.15
 REACH_WEIGHT = 0.5
 SUCCESS_BONUS = 10.0
-TIP_BONUS = 0.3
-NONTIP_PENALTY = 0.1
+TIP_BONUS = 0.05
+NONTIP_PENALTY = 0.0
 
 ESCAPE_X = 0.14
 ESCAPE_Y = 0.030
@@ -53,15 +53,13 @@ def bin_centre(idx):
     return np.array([x, y])
 
 
-JAW_GEOMS = [f"{s}_jaw_pad_{i}" for s in ("fixed", "moving") for i in range(1, 5)]
-
 
 class SO101PushEnv(gym.Env):
     metadata = {"render_modes": ["rgb_array"], "render_fps": 30}
 
     def __init__(self, xml_path=DEFAULT_XML, mode="episodic", reward_type="dense",
                  max_episode_steps=300, frame_skip=10, start_zone="A",
-                 randomize_start=True, seed=None):
+                 randomize_start=True, alternate=True, seed=None):
         assert mode in ("episodic", "reset_free")
         self.model = mujoco.MjModel.from_xml_path(xml_path)
         self.data = mujoco.MjData(self.model)
@@ -71,14 +69,18 @@ class SO101PushEnv(gym.Env):
         self.max_episode_steps = max_episode_steps
         self.frame_skip = frame_skip
         self.randomize_start = randomize_start
+        self.alternate = alternate
 
         self.cube_bid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "cube")
         self.grip_bid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "Fixed_Jaw")
         self.cube_gid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, "cube_geom")
-        self.jaw_gids = {
-            mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, n) for n in JAW_GEOMS
-        }
-        self.jaw_gids.discard(-1)
+        # whole gripper (both jaws) counts as tip contact
+        self.jaw_gids = set()
+        for g in range(self.model.ngeom):
+            b = self.model.geom_bodyid[g]
+            nm = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, b) or ""
+            if nm in ("Fixed_Jaw", "Moving_Jaw"):
+                self.jaw_gids.add(g)
         # every geom belonging to the arm (for the non-tip contact penalty)
         self.arm_gids = set()
         for g in range(self.model.ngeom):
@@ -193,7 +195,7 @@ class SO101PushEnv(gym.Env):
             self.rng = np.random.default_rng(seed)
         if self.mode == "episodic" or self.episode_count == 0:
             mujoco.mj_resetData(self.model, self.data)
-            if self.mode == "episodic" and self.episode_count > 0:
+            if self.mode == "episodic" and self.alternate and self.episode_count > 0:
                 self.target_name = "A" if self.target_name == "B" else "B"
             self._place_cube("A" if self.target_name == "B" else "B")
             self._stuck_ref, self._stuck_count = None, 0
@@ -247,7 +249,8 @@ class SO101PushEnv(gym.Env):
             self._stuck_ref, self._stuck_count = None, 0
             truncated = True
 
-        info = {"success": success, "dist": dist, "reach": d_reach, "tip": tip, "nontip": nontip,
+        info = {"success": success, "dist": dist, "reach": d_reach, "tip": tip,
+                "nontip": nontip,
                 "target": self.target_name, "intervention": intervened,
                 "intervention_kind": ("escape" if escaped else "stuck" if stuck else ""),
                 "cube_bin": xy_to_bin(self.cube_xy),
@@ -276,6 +279,14 @@ if __name__ == "__main__":
     ok = all(xy_to_bin(bin_centre(i)) == i for i in range(BIN_NX * BIN_NY))
     print("bin round-trip all 32:", ok,
           "| zone A bin:", xy_to_bin(ZONE_A), "| zone B bin:", xy_to_bin(ZONE_B))
+
+    # single-direction reset check
+    e = SO101PushEnv(mode="episodic", seed=0, alternate=False)
+    for i in range(3):
+        e.reset()
+        print(f"  single-dir ep{i}: target={e.target_name} "
+              f"cube={np.round(e.cube_xy, 3)} "
+              f"dist={np.linalg.norm(e.cube_xy - e.target_xy):.3f}")
 
     env = SO101PushEnv(mode="episodic", seed=0)
     obs, _ = env.reset()
