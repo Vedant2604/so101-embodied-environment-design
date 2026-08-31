@@ -22,14 +22,25 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--ckpt", required=True)
 ap.add_argument("--cams", type=int, nargs=2, default=[0, 2])
 ap.add_argument("--steps", type=int, default=600)
+ap.add_argument("--n-action-steps", type=int, default=0,
+                help="override execution horizon (0 = use trained value, 100)")
 ap.add_argument("--go", action="store_true", help="actually move the arm")
 ap.add_argument("--grip-open", type=float, default=0.0,
                 help="minimum gripper opening (0 = off, policy unmodified)")
+ap.add_argument("--max-delta", type=float, default=4.0,
+                help="per-step joint motion clamp in degrees")
+ap.add_argument("--wb", type=int, default=6000,
+                help="white balance temperature")
 args = ap.parse_args()
 
 dev = "cuda" if torch.cuda.is_available() else "cpu"
 policy = ACTPolicy.from_pretrained(args.ckpt).to(dev).eval()
+ap_n = getattr(policy.config, "n_action_steps", None)
+if args.n_action_steps > 0:
+    policy.config.n_action_steps = args.n_action_steps
+    print(f"n_action_steps {ap_n} -> {policy.config.n_action_steps}")
 policy.reset()
+print("queue maxlen:", getattr(policy, "_action_queue", None) and policy._action_queue.maxlen)
 print(f"loaded {args.ckpt} on {dev}")
 
 # preprocessor / postprocessor (normalization lives outside the model in 0.6.x)
@@ -48,6 +59,7 @@ caps = [cv2.VideoCapture(i, cv2.CAP_DSHOW) for i in args.cams]
 for c in caps:
     c.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     c.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
 
 arm = SO101Follower(SO101FollowerConfig(port="COM3", id="follower_arm",
                                         use_degrees=True))
@@ -93,7 +105,7 @@ try:
         act = np.asarray(out.detach().cpu() if torch.is_tensor(out) else out,
                          dtype=np.float32).reshape(-1)[:6]
 
-        act = np.clip(act, cur - MAX_DELTA, cur + MAX_DELTA)
+        act = np.clip(act, cur - args.max_delta, cur + args.max_delta)
         for i, m in enumerate(JOINTS):
             lo, hi = LIMITS[m]
             act[i] = float(np.clip(act[i], lo, hi))

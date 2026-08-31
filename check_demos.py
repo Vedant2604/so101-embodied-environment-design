@@ -1,5 +1,5 @@
 import glob, os, numpy as np, cv2
-for d in sorted(glob.glob("demos/pick2/ep*")):
+for d in sorted(glob.glob("demos/pick3/ep*")):
     t = np.load(os.path.join(d, "traj.npz"))
     n0 = len(glob.glob(os.path.join(d, "cam0_*.jpg")))
     n1 = len(glob.glob(os.path.join(d, "cam1_*.jpg")))
