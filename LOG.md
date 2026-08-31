@@ -118,21 +118,45 @@ Checkpoints tested on hardware at identical cube positions:
 |---|---|
 | 20k | approaches accurately, cannot close the grasp; needs a nudge |
 | 40k | approaches from above correctly, grasp still unreliable |
-| **60k** | **completes the full task unaided** — approach, grasp, transport, release, in ~700 steps |
+| 60k | **completes the full task unaided** — approach, grasp, transport, release, in ~700 steps |
+| **100k** | **best policy** — same task, smooth and unaided, in ~500 steps |
 
-At 60k the policy succeeded autonomously on the first attempt and repeated it in
-later trials, with most remaining failures falling 1–2 cm short on the grasp.
+Real-robot performance improved monotonically with training duration across all
+four checkpoints. Remaining failures cluster on a single mode: the grasp closes
+1–2 cm short of the cube.
+
+### Measured success rate
+
+**8 / 20 (40%) fully autonomous successes**, evaluated on the 100k checkpoint at
+varied cube positions, with no human assistance and the arm returned to a
+consistent start pose between trials.
+
+Failures were dominated by a single compounding mode:
+
+1. The grasp closes 1–2 cm short of the cube and misses.
+2. The gripper is now at cube height, so the retry *pushes the cube* out of
+   position rather than clearing it.
+3. The policy then re-approaches the cube's **original** location — it is acting
+   on a target position it no longer occupies.
+
+Each step of that chain is a consequence of the training data: the
+demonstrations contain no missed grasps, so neither recovery nor re-localisation
+after a disturbance was ever demonstrated.
 
 ### A methodological note worth recording
 
-Evaluation loss **rose** from ~0.26 to ~0.30 between 20k and 70k while training
-`l1_loss` fell to 0.032 — the textbook overfitting signature. Real-robot
-performance over the same interval improved monotonically. With only ~6 held-out
-episodes, offline validation loss was not a usable proxy for task success, and
-acting on it would have meant stopping at the worst checkpoint. The robot was
-the better evaluator throughout.
+Evaluation loss **rose** monotonically — ~0.26 at 20k, 0.2979 at 70k, 0.3014 at
+100k — while training `l1_loss` fell to 0.027. That is the textbook overfitting
+signature. Over exactly the same interval, real-robot performance improved at
+every checkpoint, ending fastest and smoothest at 100k.
 
-### Two other findings
+With ~6 held-out episodes, offline validation loss was not merely uninformative
+here; it was *anti-correlated* with task success. Acting on it would have meant
+selecting the worst checkpoint. Training was in fact stopped early at 60k on the
+strength of that metric, and resuming to 100k produced a better policy. The
+robot was the only reliable evaluator.
+
+### Other findings
 
 - **Per-step motion clamp.** A 4°/step safety limit was throttling the final
   approach. Raising it to 8° made the policy visibly faster and more decisive.
@@ -143,6 +167,17 @@ the better evaluator throughout.
 - **No termination condition.** Given surplus steps after a success, the policy
   continues acting and re-picks the cube from the tray. Demonstrations always
   ended at the drop, so "done" was never demonstrated.
+- **No recovery behaviour.** When a grasp misses, the policy re-attempts at the
+  *same* position rather than lifting and re-approaching. The demonstrations
+  contain no failures — every recorded episode succeeded — so recovery was
+  never demonstrated and cannot be imitated. This is not a tuning problem; the
+  information is absent from the training data. It is also the clearest
+  motivation for autonomous practice: a policy that practises on its own
+  generates the failures it needs to learn from.
+- **Hardware degradation is a real constraint.** Over roughly a week of
+  operation the wrist-roll servo produced three separate bus faults and the
+  gripper servo threw a thermal overload. Any claim about long unattended
+  autonomous operation on this class of hardware has to account for this.
 
 ---
 
