@@ -196,3 +196,74 @@ format, and training duration — not model capacity or compute.
 4. Reset-free autonomous practice on top of the BC policy, logging interventions
    per hour — the point at which the simulation work's original question becomes
    testable on hardware.
+
+---
+
+## Phase C — Toward autonomous practice
+
+Behaviour cloning produced a policy that works 40% of the time and cannot
+improve from its own attempts. The next stage is autonomous practice: the robot
+running unattended, scoring itself from vision, and improving without a human
+resetting the scene between attempts.
+
+### The reset problem, and why a second task
+
+Pick-and-place is not self-resetting. After a success the cube is in the tray,
+which the policy has never seen as a starting condition — so practice halts
+after one episode unless a human moves the cube back. That is precisely the
+human intervention the whole approach is meant to eliminate.
+
+The answer, following Gupta et al. (ICRA 2021), is a *task network* rather than
+a single task: define a set of tasks where the terminal state of one is a legal
+start state of another, and they reset each other. At minimum scale that is two
+tasks:
+
+| task | precondition | postcondition |
+|---|---|---|
+| `place` | cube on table | cube in tray |
+| `retrieve` | cube in tray | cube on table |
+
+### Data
+
+- `demos/retrieve` — 51 demonstrations, 29,367 frames, mean 575 per episode.
+  Cube starts in the tray; drop positions on the table deliberately varied
+  across the workspace, since those become the start distribution of `place`.
+- Combined with `demos/pick3`: **102 episodes, 55,850 frames** across both
+  tasks, converted into a single multi-task LeRobotDataset conditioned on the
+  task string.
+
+### Design: practice scheduling under embodied cost
+
+With two tasks that reset each other, something must decide which to attempt
+next. In prior work that scheduler is engineered — a hand-designed task graph
+(Gupta et al. 2021), a fixed sequencer (DBAP), a value threshold (VaPRL) — and
+its decisions are treated as free.
+
+They are not free on hardware. Every attempt spends wall-clock, actuator
+travel, and occasionally a human's attention. In simulation the right answer is
+to make the reset distribution as broad as possible and scale; that option is
+not purchasable when each reset has a price. **Which** state to practise from
+becomes a budgeted decision.
+
+The design (`scheduler_design.md`) treats the scheduler as a small learned
+policy over a low-dimensional summary of training progress, rewarded by
+measured competence gain net of time, wear, and intervention cost. It runs at
+one decision per episode — hundreds per day rather than millions per hour —
+which is what makes it learnable from real robot time.
+
+Notably, the reward signal depends on the policy already sometimes succeeding:
+competence gain is identically zero when nothing works. That is exactly why the
+earlier simulation attempt produced a null result, and why the
+demonstration-bootstrapped platform had to come first.
+
+### Build order
+
+1. Multi-task policy over both directions ← **current step**
+2. Vision-based world-state estimator, validated offline on recorded frames
+3. Ledger + session runner + hand-designed feasible scheduler
+   → first unattended multi-task session, with interventions logged
+4. Periodic competence probe
+5. Learned schedulers and the comparison against hand-designed baselines
+
+Steps 1–4 produce reportable results independently of whether step 5's claim
+holds.
