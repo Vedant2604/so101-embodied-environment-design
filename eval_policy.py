@@ -1,8 +1,8 @@
 """Run a trained ACT policy on the real SO-101.
 
-  Dry run (no motion):  python eval_policy.py --ckpt outputs/act_pick/checkpoints/010000/pretrained_model
-  Live:                 python eval_policy.py --ckpt ... --go --steps 1200
-  With gripper assist:  python eval_policy.py --ckpt ... --go --steps 1200 --grip-open 30
+  Dry run:   python eval_policy.py --ckpt <path> --cams 0 1
+  Place:     python eval_policy.py --ckpt <path> --cams 0 1 --go --steps 800 --max-delta 8 --task place
+  Retrieve:  python eval_policy.py --ckpt <path> --cams 0 1 --go --steps 800 --max-delta 8 --task retrieve
 """
 import argparse, time
 import cv2, numpy as np, torch
@@ -15,33 +15,36 @@ JOINTS = ["shoulder_pan", "shoulder_lift", "elbow_flex",
 LIMITS = {"shoulder_pan": (-110, 110), "shoulder_lift": (-110, 110),
           "elbow_flex": (-110, 110), "wrist_flex": (-110, 110),
           "wrist_roll": (-160, 160), "gripper": (0, 100)}
+TASKS = {
+    "place":    "pick up the cube and place it in the tray",
+    "retrieve": "take the cube out of the tray and place it on the table",
+}
 W, H = 320, 240          # must match training resolution
-MAX_DELTA = 4.0          # deg per step safety clamp
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--ckpt", required=True)
-ap.add_argument("--cams", type=int, nargs=2, default=[0, 2])
-ap.add_argument("--steps", type=int, default=600)
+ap.add_argument("--cams", type=int, nargs=2, default=[0, 1])
+ap.add_argument("--task", default="place", choices=list(TASKS),
+                help="which task to command the policy to perform")
+ap.add_argument("--steps", type=int, default=800)
 ap.add_argument("--n-action-steps", type=int, default=0,
                 help="override execution horizon (0 = use trained value, 100)")
 ap.add_argument("--go", action="store_true", help="actually move the arm")
 ap.add_argument("--grip-open", type=float, default=0.0,
                 help="minimum gripper opening (0 = off, policy unmodified)")
-ap.add_argument("--max-delta", type=float, default=4.0,
+ap.add_argument("--max-delta", type=float, default=8.0,
                 help="per-step joint motion clamp in degrees")
-ap.add_argument("--wb", type=int, default=6000,
-                help="white balance temperature")
 args = ap.parse_args()
 
 dev = "cuda" if torch.cuda.is_available() else "cpu"
 policy = ACTPolicy.from_pretrained(args.ckpt).to(dev).eval()
-ap_n = getattr(policy.config, "n_action_steps", None)
 if args.n_action_steps > 0:
+    old = getattr(policy.config, "n_action_steps", None)
     policy.config.n_action_steps = args.n_action_steps
-    print(f"n_action_steps {ap_n} -> {policy.config.n_action_steps}")
+    print(f"n_action_steps {old} -> {policy.config.n_action_steps}")
 policy.reset()
-print("queue maxlen:", getattr(policy, "_action_queue", None) and policy._action_queue.maxlen)
 print(f"loaded {args.ckpt} on {dev}")
+print(f'task: {args.task} -> "{TASKS[args.task]}"')
 
 # preprocessor / postprocessor (normalization lives outside the model in 0.6.x)
 pre = post = None
@@ -59,7 +62,6 @@ caps = [cv2.VideoCapture(i, cv2.CAP_DSHOW) for i in args.cams]
 for c in caps:
     c.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     c.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-
 
 arm = SO101Follower(SO101FollowerConfig(port="COM3", id="follower_arm",
                                         use_degrees=True))
@@ -90,7 +92,7 @@ try:
             "observation.state": torch.from_numpy(cur).unsqueeze(0).to(dev),
             "observation.images.wrist": to_tensor(frames[0]),
             "observation.images.scene": to_tensor(frames[1]),
-            "task": "pick up the cube and place it in the tray",
+            "task": TASKS[args.task],
         }
 
         if pre is not None:
