@@ -267,3 +267,92 @@ demonstration-bootstrapped platform had to come first.
 
 Steps 1–4 produce reportable results independently of whether step 5's claim
 holds.
+
+---
+
+## Phase D — Multi-task policy and its failure modes
+
+### The run
+
+51 `retrieve` demonstrations were combined with the 51 `place` demonstrations
+into one multi-task LeRobotDataset (102 episodes, 55,850 frames), with the two
+tasks distinguished by the task string ACT conditions on. Trained to 150k steps
+at batch 32 on a single consumer GPU (~20 h), final train `l1_loss` 0.026,
+eval loss 0.2729.
+
+### Task conditioning works
+
+At the 50k checkpoint the same weights produce clearly different behaviour for
+the two task strings — `retrieve` executes correctly, `place` does not. The
+conditioning mechanism is sound; the two tasks are simply learned to different
+standards.
+
+`retrieve` is the easier problem: the cube always starts inside the small tray
+region, so 51 demonstrations cover its start distribution densely. `place`
+starts from the cube anywhere on the table, so the same number of
+demonstrations covers a far larger space much more thinly.
+
+### Three failure modes, each traced to a cause
+
+**1. Task interference.** Mid-episode — cube grasped, arm in the air — the two
+tasks are visually near-identical but require opposite motions. This is a
+documented failure of single-network imitation policies: nearly identical
+visual scenes and gripper trajectories corresponding to different intents force
+the network to average contradictory actions. ACT and Diffusion Policy are
+known to perform well on single-task benchmarks and to degrade in multi-task
+settings for exactly this reason. The field's answers are language-grounded
+visual representations, mixture-of-experts routing, or per-task adapters on a
+frozen backbone — not a retreat to single-task policies, which remain the
+dominant paradigm.
+
+**2. No grasp perception.** After closing on the cube the policy sometimes
+reopens and re-attempts. The cube is occluded once gripped, so visually the
+state resembles "no cube in the gripper" — which in the demonstrations means
+*keep trying*. The observation space contains no signal for "I am holding
+something." Adding gripper load from the servos would supply it, at the cost of
+re-recording the dataset.
+
+**3. No recovery behaviour.** Unchanged from Phase B, and the root of both the
+above: every recorded demonstration succeeded, so no state that only arises
+after a mistake appears anywhere in the training data.
+
+### Autonomous practice infrastructure
+
+Built and committed:
+
+- `calibrate_tray.py` — click the tray corners once; the camera is fixed
+- `calibrate_mask.py` — exclusion zone over the arm, to stop dark servos being
+  detected as the cube
+- `detector.py` — dark-blob cube detection against the light table, with a tray
+  inset so tape on the border does not count as in-tray, plus a wrist-camera
+  check that reports a carried cube as `held` rather than `lost`
+- `runner.py` — session loop: read world state, select a feasible task, run an
+  episode, score it, charge time and joint travel to a cost ledger, log a CSV
+  row, repeat. Interventions are logged when no task is feasible.
+
+Two instrumentation problems worth recording, because both would have produced
+false data:
+
+- The side-on scene camera projects a cube *held in the air* into the tray's
+  pixel region. Success therefore requires the cube to also be stationary —
+  within 6 px for 15 consecutive frames — not merely inside the region.
+- Detector thresholds were set by measurement rather than guesswork: static
+  clutter (tape, cabling, arm edges) tops out at ~1510 px² while the cube
+  measures 2278–6850 px² depending on distance, giving a clean separation at
+  `MIN_AREA = 1800`. An earlier `MAX_ASPECT = 1.5` was too tight — the cube
+  reaches 1.62 at some angles — and was causing it to read as lost.
+
+### Where this leads
+
+The single-task ACT policy (40%) outperformed the multi-task one on `place`.
+That comparison — single-task ACT vs multi-task ACT on identical data, with
+task interference as the explanation — is retained as a result rather than
+discarded.
+
+The next step is a language-conditioned pretrained policy rather than a
+from-scratch one. Training ACT from scratch on 51 demonstrations per task asks
+the network to learn what a cube looks like from those demonstrations alone; a
+pretrained VLA with a frozen vision encoder already has that prior and needs
+only to learn what to do with it. This matters for the scheduler work too: the
+scheduler sits above whatever policy is underneath, and its experiment only
+becomes meaningful once that policy is competent at both tasks.
