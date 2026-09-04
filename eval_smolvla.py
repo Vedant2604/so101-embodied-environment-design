@@ -1,14 +1,21 @@
-"""Run a trained ACT policy on the real SO-101.
+"""Run a trained SmolVLA policy on the real SO-101.
 
-  Dry run:   python eval_policy.py --ckpt <path> --cams 0 1
-  Place:     python eval_policy.py --ckpt <path> --cams 0 1 --go --steps 800 --max-delta 8 --task place
-  Retrieve:  python eval_policy.py --ckpt <path> --cams 0 1 --go --steps 800 --max-delta 8 --task retrieve
+  Dry run:   python eval_smolvla.py --ckpt <path> --cams 0 1 --task place
+  Live:      python eval_smolvla.py --ckpt <path> --cams 0 1 --go --steps 800 --task place
+  Retrieve:  python eval_smolvla.py --ckpt <path> --cams 0 1 --go --steps 800 --task retrieve
+
+Camera keys must match the --rename_map used during training:
+  wrist -> observation.images.camera1
+  scene -> observation.images.camera2
 """
-import argparse, time
-from pathlib import Path
-import cv2, numpy as np, torch
+import argparse
+import time
 
-from lerobot.policies.act.modeling_act import ACTPolicy
+import cv2
+import numpy as np
+import torch
+
+from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
 from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
 
 JOINTS = ["shoulder_pan", "shoulder_lift", "elbow_flex",
@@ -20,42 +27,31 @@ TASKS = {
     "place":    "pick up the cube and place it in the tray",
     "retrieve": "take the cube out of the tray and place it on the table",
 }
-W, H = 320, 240          # must match training resolution
+W, H = 320, 240
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--ckpt", required=True)
-ap.add_argument("--cams", type=int, nargs=2, default=[0, 1])
-ap.add_argument("--task", default="place", choices=list(TASKS),
-                help="which task to command the policy to perform")
+ap.add_argument("--cams", type=int, nargs=2, default=[0, 1],
+                help="wrist index, scene index")
+ap.add_argument("--task", default="place", choices=list(TASKS))
 ap.add_argument("--steps", type=int, default=800)
-ap.add_argument("--n-action-steps", type=int, default=0,
-                help="override execution horizon (0 = use trained value, 100)")
 ap.add_argument("--go", action="store_true", help="actually move the arm")
-ap.add_argument("--grip-open", type=float, default=0.0,
-                help="minimum gripper opening (0 = off, policy unmodified)")
-ap.add_argument("--max-delta", type=float, default=8.0,
-                help="per-step joint motion clamp in degrees")
+ap.add_argument("--max-delta", type=float, default=8.0)
 args = ap.parse_args()
 
 dev = "cuda" if torch.cuda.is_available() else "cpu"
-ckpt = Path(args.ckpt).resolve()
-policy = ACTPolicy.from_pretrained(ckpt).to(dev).eval()
-if args.n_action_steps > 0:
-    old = getattr(policy.config, "n_action_steps", None)
-    policy.config.n_action_steps = args.n_action_steps
-    print(f"n_action_steps {old} -> {policy.config.n_action_steps}")
+policy = SmolVLAPolicy.from_pretrained(args.ckpt).to(dev).eval()
 policy.reset()
-print(f"loaded {ckpt} on {dev}")
+print(f"loaded {args.ckpt} on {dev}")
 print(f'task: {args.task} -> "{TASKS[args.task]}"')
 
-# preprocessor / postprocessor (normalization lives outside the model in 0.6.x)
 pre = post = None
 try:
     from lerobot.processor import PolicyProcessorPipeline
     pre = PolicyProcessorPipeline.from_pretrained(
-        ckpt, config_filename="policy_preprocessor.json")
+        args.ckpt, config_filename="policy_preprocessor.json")
     post = PolicyProcessorPipeline.from_pretrained(
-        ckpt, config_filename="policy_postprocessor.json")
+        args.ckpt, config_filename="policy_postprocessor.json")
     print("loaded processor pipeline")
 except Exception as e:
     print("no external processors:", type(e).__name__)
@@ -69,8 +65,6 @@ arm = SO101Follower(SO101FollowerConfig(port="COM3", id="follower_arm",
                                         use_degrees=True))
 arm.connect()
 print("arm connected |", "LIVE — arm will move" if args.go else "DRY RUN — no motion")
-if args.grip_open > 0:
-    print(f"gripper assist ON (min opening {args.grip_open})")
 
 
 def to_tensor(frame):
@@ -79,6 +73,8 @@ def to_tensor(frame):
     t = torch.from_numpy(rgb).permute(2, 0, 1).float() / 255.0
     return t.unsqueeze(0).to(dev)
 
+
+hz_t0, hz_n = time.perf_counter(), 0
 
 try:
     for step in range(args.steps):
@@ -92,8 +88,8 @@ try:
 
         batch = {
             "observation.state": torch.from_numpy(cur).unsqueeze(0).to(dev),
-            "observation.images.wrist": to_tensor(frames[0]),
-            "observation.images.scene": to_tensor(frames[1]),
+            "observation.images.camera1": to_tensor(frames[0]),   # wrist
+            "observation.images.camera2": to_tensor(frames[1]),   # scene
             "task": TASKS[args.task],
         }
 
@@ -108,17 +104,16 @@ try:
 
         act = np.asarray(out.detach().cpu() if torch.is_tensor(out) else out,
                          dtype=np.float32).reshape(-1)[:6]
-
         act = np.clip(act, cur - args.max_delta, cur + args.max_delta)
         for i, m in enumerate(JOINTS):
             lo, hi = LIMITS[m]
             act[i] = float(np.clip(act[i], lo, hi))
 
-        if args.grip_open > 0 and act[5] < args.grip_open:
-            act[5] = args.grip_open
-
+        hz_n += 1
         if step % 20 == 0:
-            print(f"{step:4d} cur {np.round(cur,1)} -> act {np.round(act,1)}")
+            hz = hz_n / max(time.perf_counter() - hz_t0, 1e-6)
+            print(f"{step:4d} [{hz:4.1f} Hz] cur {np.round(cur,1)} -> act {np.round(act,1)}")
+            hz_t0, hz_n = time.perf_counter(), 0
 
         if args.go:
             arm.send_action({f"{m}.pos": float(act[i]) for i, m in enumerate(JOINTS)})

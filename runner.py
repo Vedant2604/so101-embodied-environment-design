@@ -13,7 +13,8 @@ import argparse
 import csv
 import os
 import time
- 
+from pathlib import Path
+
 import cv2
 import numpy as np
 import torch
@@ -231,16 +232,17 @@ def main():
     args = ap.parse_args()
  
     dev = "cuda" if torch.cuda.is_available() else "cpu"
-    policy = ACTPolicy.from_pretrained(args.ckpt).to(dev).eval()
-    print(f"loaded {args.ckpt} on {dev}")
+    ckpt = Path(args.ckpt).resolve()
+    policy = ACTPolicy.from_pretrained(ckpt).to(dev).eval()
+    print(f"loaded {ckpt} on {dev}")
  
     pre = post = None
     try:
         from lerobot.processor import PolicyProcessorPipeline
         pre = PolicyProcessorPipeline.from_pretrained(
-            args.ckpt, config_filename="policy_preprocessor.json")
+            ckpt, config_filename="policy_preprocessor.json")
         post = PolicyProcessorPipeline.from_pretrained(
-            args.ckpt, config_filename="policy_postprocessor.json")
+            ckpt, config_filename="policy_postprocessor.json")
         print("loaded processor pipeline")
     except Exception as e:
         print("no external processors:", type(e).__name__)

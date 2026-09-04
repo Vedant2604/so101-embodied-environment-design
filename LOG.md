@@ -356,3 +356,79 @@ pretrained VLA with a frozen vision encoder already has that prior and needs
 only to learn what to do with it. This matters for the scheduler work too: the
 scheduler sits above whatever policy is underneath, and its experiment only
 becomes meaningful once that policy is competent at both tasks.
+
+---
+
+## Phase D — Multi-task policies, and two negative results
+
+### Multi-task ACT: task interference
+
+Both tasks were combined into a single LeRobotDataset (102 episodes, 55,850
+frames) distinguished by the task string ACT conditions on, and a multi-task
+ACT policy trained to 150k steps (batch 32, ~97 epochs).
+
+Task conditioning demonstrably worked — the same weights produced different
+behaviour for the `place` and `retrieve` strings. But performance split sharply:
+`retrieve` worked well, `place` could not reliably complete the grasp, despite
+`place` having worked at 40% as a single-task policy on the same demonstrations.
+
+This is a documented failure mode. ACT and Diffusion Policy perform strongly on
+single-task benchmarks but suffer gradient interference in multi-task settings,
+specifically through the **"similar-input, different-output" dilemma**: nearly
+identical visual scenes and gripper trajectories correspond to different
+intents, and the network is forced to average contradictory actions.
+
+That describes this setup exactly. Mid-episode — cube held in the air — `place`
+and `retrieve` look nearly identical and require opposite motions.
+
+A second limitation surfaced in the same runs: after closing on the cube the
+policy frequently **reopens and re-attempts the grasp**. Once the gripper
+closes, the cube is occluded in both camera views, so the observation resembles
+"no cube grasped" — a state that in the demonstrations means *keep trying*. The
+policy has no proprioceptive signal (e.g. gripper load) that would distinguish
+holding from empty.
+
+### SmolVLA: a hardware-tier constraint
+
+The interference diagnosis pointed to a language-conditioned pretrained policy,
+where the instruction is grounded in a real semantic space rather than learned
+from 51 episodes. SmolVLA (450M parameters, frozen SigLIP vision encoder,
+pretrained on LeRobot community SO-100/SO-101 data) was fine-tuned on the same
+multi-task dataset, with cameras renamed to match its expected feature keys.
+
+It trained cleanly — final eval loss 0.2270, the lowest of any policy in this
+project, reached in 4 epochs versus ACT's 97. On hardware, neither task worked.
+
+The reason is arithmetic, and it is the interesting part:
+
+| | batch | steps | samples seen |
+|---|---|---|---|
+| ACT (multi-task) | 32 | 150k | 4.8M |
+| SmolVLA | 10 | 20k | 0.2M |
+
+SmolVLA's reference recipe assumes batch 64. A 6 GB GPU fits batch 10 — at 16
+the run spilled into shared memory and slowed 5×. Reaching ACT's sample
+exposure at batch 10 would require ~480k steps, roughly 16 days of continuous
+training.
+
+**A 450M-parameter VLA cannot be fine-tuned to convergence on a 6 GB GPU**, not
+because the model does not fit, but because the batch size that fits is too
+small to reach the sample counts the method needs. Inference is not the
+obstacle either: the policy ran at ~14 Hz on the same card, against the 30 Hz it
+was trained at.
+
+### What these two results establish
+
+Both are constraints of the platform tier rather than failures of method, and
+both are the kind of thing that only appears when the hardware is actually
+cheap:
+
+- Multi-task ACT is limited by **gradient interference** between visually
+  similar tasks.
+- Multi-task SmolVLA is limited by **the batch size a 6 GB GPU permits**.
+
+The literature's own note that per-task checkpoints avoid interference but are
+"deployment-prohibitive" does not bind here: with one robot and two tasks,
+maintaining two single-task policies is entirely practical, and the scheduler is
+indifferent to whether selecting a task means switching a string or switching a
+checkpoint.

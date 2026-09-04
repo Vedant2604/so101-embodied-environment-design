@@ -144,6 +144,27 @@ python eval_policy.py --ckpt outputs/act_pick/checkpoints/060000/pretrained_mode
 `eval_policy.py` defaults to a dry run that prints predicted actions without
 moving the arm — check those look sane before passing `--go`.
 
+## Multi-task: two negative results
+
+Extending to a second task (`retrieve`: tray -> table) so the tasks reset each
+other produced two informative failures, both documented in full in `LOG.md`.
+
+**Multi-task ACT hit gradient interference.** Task conditioning worked — the
+same weights behaved differently for each task string — but `place` degraded
+badly relative to its single-task performance. This is the known
+"similar-input, different-output" dilemma: mid-episode, the two tasks look
+nearly identical and demand opposite actions, so the network averages them.
+
+**Multi-task SmolVLA hit a hardware ceiling.** A 450M pretrained VLA fine-tuned
+on the same data reached the lowest evaluation loss of any policy here (0.2270,
+in 4 epochs) and still failed on the robot — because a 6 GB GPU only fits batch
+10, giving 0.2M samples against ACT's 4.8M. Matching that exposure would take
+roughly 16 days of continuous training. The model fits; the batch size the card
+permits does not reach the sample counts the method needs.
+
+Both are constraints of the hardware tier rather than of the methods, and both
+are the kind of finding that only surfaces when the platform is genuinely cheap.
+
 ## Known limitations
 
 - **No recovery from failure.** If a grasp misses, the policy re-attempts at the
