@@ -432,3 +432,89 @@ The literature's own note that per-task checkpoints avoid interference but are
 maintaining two single-task policies is entirely practical, and the scheduler is
 indifferent to whether selecting a task means switching a string or switching a
 checkpoint.
+
+---
+
+## Phase E — Toward goal-conditioned practice
+
+### Why two tasks is not enough
+
+With K=2 tasks and a feasibility filter, the scheduler usually has exactly one
+legal action — the cube is either on the table (so run `place`) or in the tray
+(so run `retrieve`). There is almost nothing to decide. The scheduling question
+only becomes substantive when the choice is rich.
+
+Enumerating more discrete tasks is the wrong scaling path: each would need its
+own demonstrations. The alternative is **goal-conditioning** — replace
+`pi(a | s, task_label)` with `pi(a | s, goal)`, where the goal is a target
+state rather than a label. The task space becomes continuous, and the
+scheduler's action space becomes *the workspace itself*: it chooses where to
+practise next, not which of two labels to fire.
+
+This is also how the prior work this project builds on actually operates —
+VaPRL selects start states via a goal-conditioned value function, DBAP uses
+goal-conditioned imitation. The two-task setup is the discrete special case.
+
+### Hindsight relabeling means the existing data may suffice
+
+The standard technique for annotating trajectories with goals is hindsight
+relabeling: for each timestep, the set of achievable goals is the set of states
+actually reached later in that same trajectory. Every recorded episode
+therefore already contains its own goal label — the final cube position.
+
+In principle the existing 102 episodes convert to goal-conditioned form without
+new demonstrations. Whether LeRobot's ACT supports goal conditioning natively is
+**not yet verified**; if it does not, feeding a goal image as an additional
+camera stream is the usual workaround and the dataset format supports it.
+
+### Act2Goal (Zhou et al., arXiv 2512.23541, Dec 2025)
+
+The closest recent work, and worth recording precisely because parts of it are
+adoptable and parts are not.
+
+**What it does.** Given a current observation and a target *visual* goal, a
+goal-conditioned visual world model generates a plausible sequence of
+intermediate visual states capturing long-horizon structure. **Multi-Scale
+Temporal Hashing (MSTH)** then decomposes that imagined trajectory into dense
+proximal frames for fine-grained closed-loop control and sparse distal frames
+that anchor global task consistency; both are coupled to motor control through
+end-to-end cross-attention. It reports reward-free online adaptation via
+hindsight goal relabeling with LoRA-based finetuning, improving real-robot
+success from 30% to 90% on out-of-distribution tasks within minutes of
+autonomous interaction.
+
+(Note: Act2Goal's mechanism is a world model plus MSTH — not a flow-matching
+action head. Flow matching is the action decoder used by pi-0 and SmolVLA, a
+separate line.)
+
+Last author Jianlan Luo is also an author on SERL and HIL-SERL, so this sits
+directly in the real-world-RL lineage this project follows.
+
+**What is adoptable here:**
+- Visual goals as task specification, replacing language labels.
+- Hindsight relabeling of the robot's own rollouts — no reward function needed.
+- LoRA fine-tuning for fast online adaptation.
+
+**What is not:** the video world model. Training generative video prediction is
+far outside a 6 GB budget — the same tier constraint that ended the SmolVLA
+attempt.
+
+**What it does not address, and this remains the open gap:** Act2Goal relabels
+whatever rollouts it happens to collect. It does not decide *which* goals are
+worth attempting, and it does not price the attempt. Choosing where to practise,
+under a budget of time, wear, and human interventions, is still unclaimed.
+
+### Two platform issues identified
+
+- **Scene camera occlusion.** When the arm lifts the cube from the table it
+  substantially occludes the tray in the third-person view. The policy still
+  works, but the detector loses the cube during transport and the success test
+  depends on the cube being visible where it lands. A higher or more overhead
+  camera would fix it — at the cost of invalidating every policy trained on the
+  current viewpoint, so it is deferred to the next dataset.
+- **Asymmetric start-state coverage.** `retrieve` always begins with the cube in
+  the small tray region; `place` begins anywhere on a large table. With equal
+  demonstration budgets, `place` gets far sparser coverage — which matches the
+  observed difficulty gap between the two. Restricting the reachable workspace
+  so both tasks have comparable coverage is a cheaper fix than recording more
+  demonstrations.
