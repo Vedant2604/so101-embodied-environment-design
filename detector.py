@@ -19,7 +19,7 @@ DARK_THRESH = 70        # pixels darker than this are candidates
 MIN_AREA    = 1500       # lower while tuning; raise once areas are measured
 MAX_AREA    = 12000
 MAX_ASPECT  = 1.5       # cube is compact; tray tape is elongated
-TRAY_INSET  = 0.75      # shrink tray polygon so tape on the border isn't "in tray"
+TRAY_INSET  = 0.95     # shrink tray polygon so tape on the border isn't "in tray"
 
 # --- wrist camera (is the cube in the gripper?) ---------------------------
 WRIST_DARK_THRESH = 70
@@ -89,7 +89,6 @@ class CubeDetector:
                 best, best_area = c, area
 
         dbg = scene_frame.copy()
-        cv2.polylines(dbg, [self.tray], True, (255, 200, 0), 1)
         cv2.polylines(dbg, [self.tray_inner], True, (255, 200, 0), 2)
         if self.exclude is not None:
             cv2.polylines(dbg, [self.exclude], True, (0, 0, 255), 1)

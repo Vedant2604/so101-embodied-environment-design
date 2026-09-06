@@ -518,3 +518,109 @@ under a budget of time, wear, and human interventions, is still unclaimed.
   observed difficulty gap between the two. Restricting the reachable workspace
   so both tasks have comparable coverage is a cheaper fix than recording more
   demonstrations.
+
+---
+
+## Phase F — Restricted workspace, and the prior-work correction
+
+### Diagnosis: `place` was a coverage problem, not a training problem
+
+The two-policy loop (separate single-task ACT checkpoints, scheduler switching
+between them) ran the full reset-free cycle unaided: place the cube in the tray,
+return home, detect the cube in the tray, retrieve it to the table, repeat.
+
+But the two tasks were sharply asymmetric. `retrieve` succeeded almost every
+attempt; `place` failed almost every attempt, and appeared to reach toward one
+fixed location rather than tracking the cube.
+
+The cause is start-state coverage, not overfitting in the usual sense.
+`retrieve` always begins with the cube in the small tray region, so 51
+demonstrations cover it densely. `place` began with the cube anywhere on a large
+table, so the same budget left each position with two or three examples.
+
+Fix: a taped 20x25 cm region on the table (white tape, invisible to the
+brightness-threshold detector), and re-recorded `place` entirely inside it —
+43 episodes, 21,547 frames, spread deliberately across a 3x3 grid of positions.
+Same demonstration budget, roughly five times the density per unit area.
+
+Trained as a single-task policy on a rented RTX 5090: batch 96, 50k steps,
+~2 hours. Published as `Ved4nt/act-so101-place4`.
+
+### A hardware-tier measurement worth recording
+
+The same ACT architecture, same data format, same batch size, measured on two
+machines:
+
+| | throughput | 50k steps |
+|---|---|---|
+| RTX 2060, 6 GB (laptop) | 44 samples/s | ~22 h |
+| RTX 5090, 32 GB (rented) | 673 samples/s | ~2 h |
+
+A 15x difference in wall-clock for identical work. Renting compute for the
+training step while keeping inference local costs a few dollars per policy and
+is the practical answer for this hardware tier.
+
+### Another BC brittleness result: the start pose
+
+`place` failed 5/5 inside the autonomous runner while succeeding first-attempt
+when run standalone — with the same checkpoint. The difference was the starting
+pose. The standalone script always began from the demonstration home pose; the
+runner began each episode wherever the previous one had ended, resetting only
+the gripper.
+
+Adding an explicit, slow return-to-home between episodes restored the standalone
+behaviour. **The policies are competent only from the pose the demonstrations
+began in, so autonomous operation requires an explicit reset-to-home between
+attempts** — a small but real constraint on reset-free practice that only
+appears once the loop is actually running.
+
+(Implementation note: the homing move initially reused the 8 deg/step action
+clamp, i.e. 240 deg/s, which is unsafe on hardware. 1.0-1.5 deg/step is the
+usable range.)
+
+### Success detection had to move outside the episode
+
+`place` was being scored as failure even when it correctly deposited the cube,
+because the gripper occludes the cube at the exact moment of release and the
+settle-detector never fires. Success is now re-checked *after* the arm returns
+home and is clear of the tray. This is the more honest definition anyway:
+success means the cube ended in the goal region, and the only reliable moment to
+observe that is when nothing is occluding it.
+
+### Prior-work correction on the research proposal
+
+A deeper literature check surfaced two precedents closer than anything found
+earlier, both of which must be cited rather than discovered by a reviewer:
+
+- **EES — "Practice Makes Perfect: Planning to Learn Skill Parameter Policies"**
+  (Silver et al., RSS 2024). A Spot robot, operating fully reset-free, estimates
+  its own skill competence, extrapolates expected improvement from practice, and
+  uses cost-aware planning to select which skill to practise next. Reported
+  learning a placing task in roughly three hours against ten or more for prior
+  frameworks.
+- **Deliberate Practice** (Vats, Harithas, Akbulut, Raghunathan, Konidaris —
+  Brown / MERL, 2026). Allocates a limited practice budget across skills via a
+  bilinear program solved to provable optimality, validated on a Franka Panda.
+
+Neither uses a *learned* scheduler — EES plans, DP solves an optimization — and
+neither prices actuator wear, wall-clock time, or human interventions. Deliberate
+Practice's budget is a count of practice trials.
+
+Separately, **Leave No Trace** (Eysenbach, Gu, Ibarz, Levine, ICLR 2018) already
+proposed the cost idea and explicitly left it undone: the authors note they treat
+all manual resets as equally bad, observe that some resets are far costlier than
+others, and suggest specifying per-reset costs and incorporating them into the
+learning algorithm — flagged as an approach not studied in that paper. It appears
+to remain unexecuted.
+
+**Consequence for the proposal.** Leading with "the scheduler should be learned"
+is now the weakest available framing, because EES and Deliberate Practice
+demonstrate that strong non-learned schedulers already exist and one of them is
+provably optimal for its objective. The defensible contribution is the
+**embodied-cost objective** — competence gain net of wall-clock, actuator wear,
+and human interventions — and the controlled comparison that isolates the cost
+term.
+
+The headline metrics change accordingly: not final success rate, but
+**competence gained per unit of actuator travel** and **competence gained per
+human intervention**.
