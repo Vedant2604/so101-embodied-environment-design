@@ -624,3 +624,125 @@ term.
 The headline metrics change accordingly: not final success rate, but
 **competence gained per unit of actuator travel** and **competence gained per
 human intervention**.
+
+---
+
+## Phase G — Both tasks working, and what the failures are now
+
+### `place` fixed by restricting the workspace
+
+Re-recorded entirely inside a taped ~20x25 cm region on the table: 43 episodes,
+21,547 frames, positions spread deliberately across a 3x3 grid. Trained as a
+single-task ACT (batch 96, 50k steps, rented RTX 5090, ~2 hours) and published
+as `Ved4nt/act-so101-place4`.
+
+**Result: 10/10 successes across all positions inside the region**, against 8/20
+for the previous policy trained on the same demonstration budget spread over the
+whole table.
+
+The difference is coverage density, not model capacity or training length. The
+same 40-50 demonstrations concentrated into roughly a fifth of the area give
+about five times the examples per unit area. `retrieve` had always worked better
+for exactly this reason — the cube always started inside the small tray.
+
+A protocol change helped too: lifting the arm clear after releasing the cube, so
+the scene camera can verify the placement rather than seeing a gripper.
+
+### The detector had a projection bug
+
+The cube is a 3D object seen at a shallow angle. Its base sits inside the tray,
+but the blob in the image extends upward past the tray boundary, so the blob
+*centroid* falls outside the polygon while the cube is plainly inside it. Region
+classification was therefore wrong for a correctly-placed cube.
+
+Fixed by classifying on the blob's **contact point** — the bottom-centre of its
+bounding box, where the cube meets the surface. That is the only point in the
+image that answers "where is the cube" correctly under perspective.
+
+A useful side effect: because region membership is now reliable, it can be used
+as the primary filter. A candidate blob counts as the cube only if its contact
+point lies inside a calibrated region, which rejects scene clutter without
+needing tight area and aspect thresholds — the thresholds that had been causing
+missed detections.
+
+### Both tasks running in the loop
+
+With `act-so101-place4` and `act-so101-retrieve` loaded simultaneously and the
+feasibility scheduler switching between them, the system completes the full
+reset-free cycle unaided: place the cube in the tray, return home, detect it in
+the tray, retrieve it to the table, repeat. Four consecutive successful cycles
+observed.
+
+### What still fails, and what it is
+
+The remaining failure is **physical, not learned**: the cube bounces on release
+and sometimes settles outside the region either policy was trained for. Neither
+task is then feasible, and the session logs a human intervention.
+
+That is worth stating plainly because it is the cost the whole proposal is
+about. The intervention is not caused by a policy error — both policies did
+their job — but by where the object happened to end up. In a system that must
+practise unattended, *where the object ends up* is precisely what determines
+whether the next attempt is useful, and it is exactly the quantity a scheduler
+could influence and price.
+
+---
+
+## Phase G — Both tasks working, and the perspective bug
+
+### `place` solved by restricting the workspace
+
+Re-recorded `place` entirely inside the taped square: 43 episodes, 21,547
+frames, deliberately spread across a 3x3 grid of cube positions. Trained on a
+rented RTX 5090 (batch 96, 50k steps, ~2 hours).
+
+Result: **10/10 successes** across all positions inside the region, against
+8/20 for the previous policy trained on the same demonstration budget spread
+across the whole table.
+
+The difference is coverage density, not training. Confining the same number of
+demonstrations to roughly a fifth of the area gives roughly five times the
+examples per unit area. The earlier policy was not overfitted — it was
+undersampled everywhere.
+
+The demonstration protocol also changed: the arm is lifted clear after
+releasing the cube, so the scene camera can observe the placement. This
+addresses the occlusion that previously made a correct `place` register as a
+failure.
+
+### A perspective bug in the detector
+
+With both policies working, the loop still failed at the tray. The detector
+reported the cube as missing while it sat plainly inside the tray.
+
+The cause is projective, not photometric. The cube is a solid object viewed at
+a shallow angle: its base rests inside the tray, but the blob in the image
+extends upward well past the tray boundary. Classifying by the blob's centroid
+therefore places a cube that is physically inside the tray outside the tray
+polygon.
+
+Fix: classify by the blob's **contact point** — the bottom-centre of its
+bounding box, where the object meets the surface. That is the only point in the
+image whose position corresponds to the object's location on the table.
+
+Two useful consequences followed. The region polygons no longer need
+aggressive shrinking (0.98 rather than 0.90), recovering usable tray area. And
+region membership itself becomes the primary filter — a candidate counts as the
+cube only if its contact point lies inside a calibrated region — which rejects
+the static scene clutter that had been competing with the cube under
+area-and-aspect filtering alone.
+
+An earlier attempt to replace blob detection with region-masked dark-pixel
+fractions was discarded: it counted any dark pixel, including the arm's own
+servos and cabling passing over a region.
+
+### Status
+
+Both single-task policies now run in the autonomous loop, and consecutive
+successful cycles have been observed: place the cube in the tray, return home,
+detect it, retrieve it to the square, repeat — unaided.
+
+The remaining failure is physical rather than learned: the cube sometimes
+bounces on release and comes to rest where neither task can act on it. That
+event is now logged as an intervention rather than absorbed silently, which
+makes it measurable — and it is exactly the quantity the cost argument rests on.
